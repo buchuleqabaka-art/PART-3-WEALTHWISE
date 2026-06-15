@@ -75,5 +75,5 @@ Google Drive: https://drive.google.com/file/d/1G7ByvHhg28FrCLeYi0lI9JHa9-tiIXkq/
 This project is licensed under the MIT License - see the LICENSE file for details.
 
 ## Links
-Youtube: 
+Google Drive: https://drive.google.com/file/d/1G7ByvHhg28FrCLeYi0lI9JHa9-tiIXkq/view?usp=drivesdk 
 Github: https://github.com/buchuleqabaka-art/Wealthwise
