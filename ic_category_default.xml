@@ -1,0 +1,263 @@
+package com.example.wealthwise.viewmodel
+
+import android.app.Application
+import androidx.lifecycle.*
+import com.example.wealthwise.SessionManager
+import com.example.wealthwise.database.WealthWiseDatabase
+import com.example.wealthwise.database.dao.CategoryDao
+import com.example.wealthwise.database.entities.*
+import com.example.wealthwise.repository.TransactionRepository
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.text.SimpleDateFormat
+import java.util.*
+
+data class CategoryTotal(
+    val name: String,
+    val amount: Double,
+    val color: String
+)
+
+data class GoalProgress(val goal: SavingsGoal?, val totalSpent: Double)
+
+class TransactionViewModel(application: Application) : AndroidViewModel(application) {
+
+    private val db = WealthWiseDatabase.getDatabase(application)
+    private val categoryDao: CategoryDao = db.categoryDao()
+    private val savingsGoalDao = db.savingsGoalDao()
+    private val userDao = db.userDao()
+    private val repository: TransactionRepository = TransactionRepository(db.transactionDao())
+
+    // Core State
+    private val userIdLiveData = MutableLiveData<String>()
+
+    // Filters
+    private val categoryTypeFilter = MutableLiveData("EXPENSE")
+    private val timeRangeFilter = MutableLiveData(30)
+    private val budgetMonthFilter = MutableLiveData<String>() // "yyyy-MM"
+
+    init {
+        refreshUser()
+    }
+
+    // ==================== LIVE DATA ====================
+
+    val currentUserLiveData: LiveData<User> = userIdLiveData.switchMap { uid ->
+        if (uid.isBlank()) return@switchMap MutableLiveData()
+        userDao.getUserLiveData(uid.toLongOrNull() ?: -1L)
+    }
+
+    val allTransactions: LiveData<List<AppTransaction>> = userIdLiveData.switchMap { uid ->
+        if (uid.isBlank()) return@switchMap MutableLiveData()
+        repository.getAllTransactions(uid)
+    }
+
+    val allTransactionsWithCategory: LiveData<List<TransactionWithCategory>> = userIdLiveData.switchMap { uid ->
+        if (uid.isBlank()) return@switchMap MutableLiveData()
+        repository.getAllTransactionsWithCategory(uid)
+    }
+
+    val totalIncome: LiveData<Double> = userIdLiveData.switchMap { uid ->
+        if (uid.isBlank()) return@switchMap MutableLiveData(0.0)
+        repository.getTotalIncome(uid)
+    }
+
+    val totalExpenses: LiveData<Double> = userIdLiveData.switchMap { uid ->
+        if (uid.isBlank()) return@switchMap MutableLiveData(0.0)
+        repository.getTotalExpenses(uid)
+    }
+
+    val balance: LiveData<Double> = userIdLiveData.switchMap { uid ->
+        if (uid.isBlank()) return@switchMap MutableLiveData(0.0)
+        MediatorLiveData<Double>().apply {
+            val inc = repository.getTotalIncome(uid)
+            val exp = repository.getTotalExpenses(uid)
+            fun update() { value = (inc.value ?: 0.0) - (exp.value ?: 0.0) }
+            addSource(inc) { update() }
+            addSource(exp) { update() }
+        }
+    }
+
+    val categoryTotalsInfo: LiveData<List<CategoryTotal>> = userIdLiveData.switchMap { uid ->
+        if (uid.isBlank()) return@switchMap MutableLiveData()
+        MediatorLiveData<List<CategoryTotal>>().apply {
+            val transactions = repository.getAllTransactionsWithCategory(uid)
+            val range = timeRangeFilter
+            
+            fun update() {
+                val list = transactions.value ?: return
+                val days = range.value ?: 30
+                val cutoff = Calendar.getInstance().apply { add(Calendar.DAY_OF_YEAR, -days) }.time
+                val fmt = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
+                val cutoffStr = fmt.format(cutoff)
+
+                value = list.filter { it.transaction.type == "EXPENSE" && it.transaction.date >= cutoffStr }
+                    .groupBy { it.category?.name ?: "Other" }
+                    .map { (name, items) ->
+                        CategoryTotal(name, items.sumOf { it.transaction.amount }, items.firstOrNull()?.category?.color ?: "#808080")
+                    }
+            }
+            addSource(transactions) { update() }
+            addSource(range) { update() }
+        }
+    }
+
+    val monthlyDailySpending: LiveData<List<DateSum>> = userIdLiveData.switchMap { uid ->
+        if (uid.isBlank()) return@switchMap MutableLiveData()
+        timeRangeFilter.switchMap { days ->
+            val start = Calendar.getInstance().apply { add(Calendar.DAY_OF_YEAR, -days) }
+            val fmt = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
+            repository.getDailyExpense(uid, fmt.format(start.time))
+        }
+    }
+
+    val filteredCategories: LiveData<List<Category>> = userIdLiveData.switchMap { uid ->
+        if (uid.isBlank()) return@switchMap MutableLiveData()
+        categoryTypeFilter.switchMap { type ->
+            categoryDao.getCategoriesByType(uid, type)
+        }
+    }
+
+    val budgetData: LiveData<List<com.example.wealthwise.ui.budget.BudgetCategory>> =
+        userIdLiveData.switchMap { uid ->
+            if (uid.isBlank()) return@switchMap MutableLiveData(emptyList())
+
+            MediatorLiveData<List<com.example.wealthwise.ui.budget.BudgetCategory>>().apply {
+                val categories = categoryDao.getExpenseCategories(uid)
+                val transactions = repository.getAllTransactions(uid)
+
+                fun update() {
+                    val cats = categories.value ?: return
+                    val trans = transactions.value ?: return
+                    value = computeBudgetData(cats, trans, budgetMonthFilter.value)
+                }
+
+                addSource(categories) { update() }
+                addSource(transactions) { update() }
+                addSource(budgetMonthFilter) { update() }
+            }
+        }
+
+    val goalProgress: LiveData<GoalProgress> = userIdLiveData.switchMap { uid ->
+        if (uid.isBlank()) return@switchMap MutableLiveData(GoalProgress(null, 0.0))
+
+        MediatorLiveData<GoalProgress>().apply {
+            val goals = savingsGoalDao.getAllGoals(uid)
+            val expenses = repository.getTotalExpenses(uid)
+
+            fun update() {
+                val goalList = goals.value
+                val spent = expenses.value ?: 0.0
+                val primaryGoal = goalList?.find { it.name == "Monthly Target" } ?: goalList?.firstOrNull()
+                value = GoalProgress(primaryGoal, spent)
+            }
+
+            addSource(goals) { update() }
+            addSource(expenses) { update() }
+            addSource(budgetMonthFilter) { update() }
+        }
+    }
+
+    // ==================== PUBLIC API ====================
+
+    fun setBudgetMonthFilter(yearMonth: String) {
+        budgetMonthFilter.value = yearMonth
+    }
+
+    fun setCategoryTypeFilter(type: String) {
+        categoryTypeFilter.value = type
+    }
+
+    fun setTimeRange(days: Int) {
+        timeRangeFilter.value = days
+    }
+
+    suspend fun getAllTransactionsOnce(): List<AppTransaction> {
+        val uid = getUserId()
+        if (uid.isBlank()) return emptyList()
+        return repository.getAllTransactionsOnce(uid)
+    }
+
+    fun insert(transaction: AppTransaction) = viewModelScope.launch {
+        val uid = getUserId()
+        if (uid.isBlank()) return@launch
+        repository.insert(transaction.copy(userId = uid))
+        awardPoints(10)
+    }
+
+    fun insertGoal(goal: SavingsGoal) = viewModelScope.launch {
+        val uid = getUserId()
+        if (uid.isBlank()) return@launch
+        savingsGoalDao.insert(goal.copy(userId = uid))
+    }
+
+    fun deleteCategory(category: Category) = viewModelScope.launch {
+        val uid = getUserId()
+        if (uid.isBlank()) return@launch
+        categoryDao.delete(category.copy(userId = uid))
+    }
+
+    fun insertCategoryIfNotDuplicate(
+        category: Category,
+        onSuccess: () -> Unit,
+        onDuplicate: () -> Unit
+    ) = viewModelScope.launch {
+        val uid = getUserId()
+        if (uid.isBlank()) return@launch
+        val existing = categoryDao.getCategoryByName(uid, category.name)
+        if (existing != null) {
+            withContext(Dispatchers.Main) { onDuplicate() }
+        } else {
+            categoryDao.insert(category.copy(userId = uid))
+            withContext(Dispatchers.Main) { onSuccess() }
+        }
+    }
+
+    fun refreshUser() {
+        userIdLiveData.value = getUserId()
+    }
+
+    fun awardPoints(points: Int) = viewModelScope.launch {
+        val uid = getUserId().toLongOrNull() ?: return@launch
+        val user = userDao.getUserById(uid) ?: return@launch
+        val updated = user.copy(points = user.points + points)
+        val finalUser = updated.copy(level = 1 + (updated.points / 100))
+        userDao.update(finalUser)
+    }
+
+    fun update(transaction: AppTransaction) = viewModelScope.launch {
+        repository.update(transaction)
+    }
+
+    fun delete(transaction: AppTransaction) = viewModelScope.launch {
+        repository.delete(transaction)
+    }
+
+    private fun getUserId(): String = SessionManager.getUserId(getApplication()) ?: ""
+
+    // ==================== COMPUTATIONS ====================
+
+    private fun computeBudgetData(
+        categories: List<Category>,
+        transactions: List<AppTransaction>,
+        selectedMonth: String?
+    ): List<com.example.wealthwise.ui.budget.BudgetCategory> {
+
+        val filterMonth = selectedMonth ?: getCurrentYearMonth()
+
+        val categorySpentMap = transactions.asSequence()
+            .filter { it.type == "EXPENSE" && it.date.startsWith(filterMonth) }
+            .groupBy { it.categoryId }
+            .mapValues { it.value.sumOf { trans -> trans.amount } }
+
+        return categories.map { cat ->
+            com.example.wealthwise.ui.budget.BudgetCategory(cat, categorySpentMap[cat.id] ?: 0.0)
+        }
+    }
+
+    private fun getCurrentYearMonth(): String {
+        val cal = Calendar.getInstance()
+        return "%04d-%02d".format(cal.get(Calendar.YEAR), cal.get(Calendar.MONTH) + 1)
+    }
+}

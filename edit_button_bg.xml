@@ -1,0 +1,86 @@
+package com.example.wealthwise.ui.transactions
+
+import android.graphics.Color
+import android.view.LayoutInflater
+import android.view.ViewGroup
+import androidx.core.graphics.toColorInt
+import androidx.recyclerview.widget.DiffUtil
+import androidx.recyclerview.widget.ListAdapter
+import androidx.recyclerview.widget.RecyclerView
+import com.example.wealthwise.R
+import com.example.wealthwise.database.entities.TransactionWithCategory
+import com.example.wealthwise.databinding.ItemTransactionBinding
+
+class TransactionAdapter(
+    private val onDeleteClick: (com.example.wealthwise.database.entities.AppTransaction) -> Unit,
+    private val onReceiptClick: (String) -> Unit
+) : ListAdapter<TransactionWithCategory, TransactionAdapter.TransactionViewHolder>(TransactionDiffCallback()) {
+
+    override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): TransactionViewHolder {
+        val binding = ItemTransactionBinding.inflate(LayoutInflater.from(parent.context), parent, false)
+        return TransactionViewHolder(binding, onDeleteClick, onReceiptClick)
+    }
+
+    override fun onBindViewHolder(holder: TransactionViewHolder, position: Int) {
+        holder.bind(getItem(position))
+    }
+
+    class TransactionViewHolder(
+        private val binding: ItemTransactionBinding,
+        private val onDeleteClick: (com.example.wealthwise.database.entities.AppTransaction) -> Unit,
+        private val onReceiptClick: (String) -> Unit
+    ) : RecyclerView.ViewHolder(binding.root) {
+        fun bind(item: TransactionWithCategory) {
+            val transaction = item.transaction
+            val category = item.category
+            
+            binding.tvDescription.text = transaction.description.ifEmpty { category?.name ?: "No Description" }
+            binding.tvDate.text = transaction.date
+            
+            val prefix = if (transaction.type == "EXPENSE") "- R" else "+ R"
+            binding.tvAmount.text = "$prefix %.2f".format(transaction.amount)
+            
+            val amountColor = if (transaction.type == "EXPENSE") "#E24B4A".toColorInt() else "#1D9E75".toColorInt()
+            binding.tvAmount.setTextColor(amountColor)
+
+            // ── RECEIPT PHOTO ──
+            if (!transaction.photoPath.isNullOrEmpty()) {
+                binding.cvReceipt.visibility = android.view.View.VISIBLE
+                try {
+                    val file = java.io.File(transaction.photoPath)
+                    if (file.exists()) {
+                        binding.ivReceipt.setImageURI(android.net.Uri.fromFile(file))
+                    } else if (transaction.photoPath.startsWith("content://")) {
+                        binding.ivReceipt.setImageURI(android.net.Uri.parse(transaction.photoPath))
+                    } else {
+                        binding.cvReceipt.visibility = android.view.View.GONE
+                    }
+                } catch (e: Exception) {
+                    binding.cvReceipt.visibility = android.view.View.GONE
+                }
+
+                binding.cvReceipt.setOnClickListener {
+                    onReceiptClick(transaction.photoPath)
+                }
+            } else {
+                binding.cvReceipt.visibility = android.view.View.GONE
+            }
+
+            // Long click to delete
+            binding.root.setOnLongClickListener {
+                onDeleteClick(transaction)
+                true
+            }
+        }
+    }
+
+    class TransactionDiffCallback : DiffUtil.ItemCallback<TransactionWithCategory>() {
+        override fun areItemsTheSame(oldItem: TransactionWithCategory, newItem: TransactionWithCategory): Boolean {
+            return oldItem.transaction.id == newItem.transaction.id
+        }
+
+        override fun areContentsTheSame(oldItem: TransactionWithCategory, newItem: TransactionWithCategory): Boolean {
+            return oldItem == newItem
+        }
+    }
+}

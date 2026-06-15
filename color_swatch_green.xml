@@ -1,0 +1,330 @@
+package com.example.wealthwise.ui.reports
+
+import android.graphics.Color
+import android.os.Bundle
+import android.view.LayoutInflater
+import android.view.View
+import android.view.ViewGroup
+import androidx.core.graphics.toColorInt
+import androidx.fragment.app.Fragment
+import androidx.fragment.app.viewModels
+import androidx.navigation.fragment.findNavController
+import com.example.wealthwise.databinding.FragmentReportsBinding
+import com.example.wealthwise.viewmodel.TransactionViewModel
+import com.github.mikephil.charting.components.LimitLine
+import com.github.mikephil.charting.components.XAxis
+import com.github.mikephil.charting.formatter.IndexAxisValueFormatter
+import com.github.mikephil.charting.data.*
+import com.github.mikephil.charting.interfaces.datasets.IBarDataSet
+import com.github.mikephil.charting.interfaces.datasets.ILineDataSet
+import java.text.SimpleDateFormat
+import java.util.*
+
+class ReportsFragment : Fragment() {
+
+    private var _binding: FragmentReportsBinding? = null
+    private val binding get() = _binding!!
+    private val viewModel: TransactionViewModel by viewModels()
+    private lateinit var receiptAdapter: ReceiptAdapter
+
+    override fun onCreateView(
+        inflater: LayoutInflater, container: ViewGroup?,
+        savedInstanceState: Bundle?,
+    ): View {
+        _binding = FragmentReportsBinding.inflate(inflater, container, false)
+        return binding.root
+    }
+
+    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+        super.onViewCreated(view, savedInstanceState)
+
+        binding.tvBack.setOnClickListener {
+            findNavController().popBackStack()
+        }
+
+        setupFilters()
+        setupRecyclerView()
+        setupCharts()
+        observeData()
+    }
+
+    private fun setupFilters() {
+        binding.btnFilterMonth.setOnClickListener {
+            updateFilterUI(binding.btnFilterMonth)
+            viewModel.setTimeRange(30)
+        }
+        binding.btnFilter3Month.setOnClickListener {
+            updateFilterUI(binding.btnFilter3Month)
+            viewModel.setTimeRange(90)
+        }
+        binding.btnFilterYear.setOnClickListener {
+            updateFilterUI(binding.btnFilterYear)
+            viewModel.setTimeRange(365)
+        }
+    }
+
+    private fun updateFilterUI(activeButton: android.widget.Button) {
+        val buttons = listOf(binding.btnFilterMonth, binding.btnFilter3Month, binding.btnFilterYear)
+        buttons.forEach { btn ->
+            if (btn == activeButton) {
+                btn.setBackgroundResource(com.example.wealthwise.R.drawable.btn_blue_pill)
+                btn.setTextColor(Color.WHITE)
+            } else {
+                btn.setBackgroundResource(com.example.wealthwise.R.drawable.input_field_bg)
+                btn.setTextColor("#0A0E27".toColorInt())
+            }
+        }
+    }
+
+    private fun setupRecyclerView() {
+        receiptAdapter = ReceiptAdapter()
+        binding.rvReceipts.apply {
+            layoutManager = androidx.recyclerview.widget.LinearLayoutManager(requireContext(), androidx.recyclerview.widget.LinearLayoutManager.HORIZONTAL, false)
+            adapter = receiptAdapter
+        }
+    }
+
+    private fun setupCharts() {
+        // Setup Pie Chart
+        binding.pieChart.apply {
+            description.isEnabled = false
+            isDrawHoleEnabled = true
+            holeRadius = 45f
+            setHoleColor(Color.TRANSPARENT)
+            legend.isEnabled = false
+            setEntryLabelColor(Color.WHITE)
+            animateY(800)
+        }
+
+        // Setup Line Chart
+        binding.lineChart.apply {
+            description.isEnabled = false
+            xAxis.setDrawGridLines(false)
+            axisLeft.setDrawGridLines(false)
+            axisRight.isEnabled = false
+            xAxis.textColor = Color.WHITE
+            axisLeft.textColor = Color.WHITE
+            xAxis.position = XAxis.XAxisPosition.BOTTOM
+            animateX(800)
+        }
+
+        // Setup Bar Chart
+        binding.barChart.apply {
+            description.isEnabled = false
+            xAxis.setDrawGridLines(false)
+            axisLeft.setDrawGridLines(false)
+            axisRight.isEnabled = false
+            xAxis.textColor = Color.WHITE
+            axisLeft.textColor = Color.WHITE
+            xAxis.position = XAxis.XAxisPosition.BOTTOM
+            legend.isEnabled = false
+            animateY(800)
+        }
+    }
+
+    private fun observeData() {
+        // Observe all transactions to determine if page is empty
+        viewModel.allTransactions.observe(viewLifecycleOwner) { transactions ->
+            if (transactions.isNullOrEmpty()) {
+                binding.tvEmptyReports.visibility = View.VISIBLE
+                binding.llReportsContent.visibility = View.GONE
+            } else {
+                binding.tvEmptyReports.visibility = View.GONE
+                binding.llReportsContent.visibility = View.VISIBLE
+                
+                // Update receipts specifically
+                val photoPaths = transactions
+                    .filter { !it.photoPath.isNullOrEmpty() }
+                    .mapNotNull { it.photoPath }
+                
+                if (photoPaths.isNotEmpty()) {
+                    binding.tvReceiptsHeader.visibility = View.VISIBLE
+                    binding.rvReceipts.visibility = View.VISIBLE
+                    receiptAdapter.submitList(photoPaths)
+                } else {
+                    binding.tvReceiptsHeader.visibility = View.GONE
+                    binding.rvReceipts.visibility = View.GONE
+                }
+            }
+        }
+
+        // Pie Chart & Bar Chart Data
+        viewModel.categoryTotalsInfo.observe(viewLifecycleOwner) { totals ->
+            if (!totals.isNullOrEmpty()) {
+                binding.pieChart.visibility = View.VISIBLE
+                binding.barChart.visibility = View.VISIBLE
+                updatePieChart(totals)
+                updateBarChart(totals)
+                updateTopSpendingList(totals)
+            } else {
+                binding.pieChart.visibility = View.GONE
+                binding.barChart.visibility = View.GONE
+                clearTopSpendingList()
+            }
+        }
+
+        // Line Chart Data
+        viewModel.monthlyDailySpending.observe(viewLifecycleOwner) { dailySums ->
+            if (!dailySums.isNullOrEmpty()) {
+                binding.lineChart.visibility = View.VISIBLE
+                updateLineChart(dailySums)
+            } else {
+                binding.lineChart.visibility = View.GONE
+            }
+        }
+
+        // Re-draw line chart if income changes (to update limit lines)
+        viewModel.totalIncome.observe(viewLifecycleOwner) {
+            val dailySums = viewModel.monthlyDailySpending.value
+            if (!dailySums.isNullOrEmpty()) {
+                updateLineChart(dailySums)
+            }
+        }
+    }
+
+    private fun updateBarChart(totals: List<com.example.wealthwise.viewmodel.CategoryTotal>) {
+        val entries = totals.mapIndexed { index, cat -> BarEntry(index.toFloat(), cat.amount.toFloat()) }
+        val labels = totals.map { it.name }
+        val colors = totals.map { 
+            try { Color.parseColor(it.color) } catch (e: Exception) { Color.GRAY }
+        }
+
+        val dataSet = BarDataSet(entries, "Category Spending").apply {
+            this.colors = colors
+            valueTextColor = Color.WHITE
+            valueTextSize = 10f
+        }
+
+        binding.barChart.apply {
+            data = BarData(dataSet)
+            xAxis.valueFormatter = IndexAxisValueFormatter(labels)
+            xAxis.granularity = 1f
+            invalidate()
+        }
+    }
+
+    private fun updatePieChart(totals: List<com.example.wealthwise.viewmodel.CategoryTotal>) {
+        val entries = totals.map { PieEntry(it.amount.toFloat(), it.name) }
+        val colors = totals.map { 
+            try { 
+                if (it.color.startsWith("#")) Color.parseColor(it.color)
+                else it.color.toColorInt()
+            } catch (e: Exception) { Color.GRAY }
+        }
+
+        val dataSet = PieDataSet(entries, "").apply {
+            this.colors = colors
+            valueTextColor = Color.WHITE
+            valueTextSize = 10f
+            setDrawValues(false)
+            sliceSpace = 2f
+        }
+
+        binding.pieChart.data = PieData(dataSet)
+        binding.pieChart.animateY(800)
+        binding.pieChart.invalidate()
+    }
+
+    private fun updateLineChart(dailySums: List<com.example.wealthwise.database.entities.DateSum>) {
+        // Calculate cumulative spending
+        var cumulative = 0f
+        val entries = dailySums.mapIndexed { index, ds -> 
+            cumulative += ds.total.toFloat()
+            Entry(index.toFloat(), cumulative)
+        }
+        val dates = dailySums.map { it.date.takeLast(5) } // MM-DD
+
+        val dataSet = LineDataSet(entries, "Cumulative Spending").apply {
+            color = "#00E5FF".toColorInt()
+            setCircleColor("#00E5FF".toColorInt())
+            lineWidth = 2.5f
+            circleRadius = 3f
+            setDrawFilled(true)
+            fillColor = "#00E5FF".toColorInt()
+            fillAlpha = 40
+            valueTextColor = Color.WHITE
+            mode = LineDataSet.Mode.CUBIC_BEZIER
+            setDrawValues(false)
+        }
+
+        binding.lineChart.apply {
+            axisLeft.removeAllLimitLines()
+            
+            val prefs = requireContext().getSharedPreferences("budget_goals", android.content.Context.MODE_PRIVATE)
+            val maxSpendingGoal = prefs.getFloat("max_spending_goal", 0f)
+            val minSavingsGoal = prefs.getFloat("min_savings_goal", 0f)
+
+            if (maxSpendingGoal > 0) {
+                val llMax = LimitLine(maxSpendingGoal, "Max Spending").apply {
+                    lineWidth = 2f
+                    enableDashedLine(10f, 10f, 0f)
+                    lineColor = Color.parseColor("#FF6B6B")
+                    textColor = Color.WHITE
+                    textSize = 10f
+                }
+                axisLeft.addLimitLine(llMax)
+            }
+
+            // Savings goal as a spending cap: Spending < Total Income - Min Savings
+            viewModel.totalIncome.value?.let { income ->
+                if (minSavingsGoal > 0 && income > 0) {
+                    val spendingCap = (income - minSavingsGoal).toFloat()
+                    if (spendingCap > 0) {
+                        val llSavings = LimitLine(spendingCap, "Savings Target Cap").apply {
+                            lineWidth = 2f
+                            enableDashedLine(10f, 10f, 0f)
+                            lineColor = Color.parseColor("#00E5FF")
+                            textColor = Color.WHITE
+                            textSize = 10f
+                            labelPosition = LimitLine.LimitLabelPosition.RIGHT_BOTTOM
+                        }
+                        axisLeft.addLimitLine(llSavings)
+                    }
+                }
+            }
+            
+            data = LineData(dataSet)
+            xAxis.valueFormatter = IndexAxisValueFormatter(dates)
+            xAxis.granularity = 1f
+            invalidate()
+        }
+    }
+
+    private fun clearTopSpendingList() {
+        binding.tvValue1.text = "R 0"
+        binding.tvValue2.text = "R 0"
+        binding.tvValue3.text = "R 0"
+        binding.tvLabel1.text = "Category 1"
+        binding.tvLabel2.text = "Category 2"
+        binding.tvLabel3.text = "Category 3"
+    }
+
+    private fun updateTopSpendingList(totals: List<com.example.wealthwise.viewmodel.CategoryTotal>) {
+        val sorted = totals.sortedByDescending { it.amount }
+        
+        clearTopSpendingList()
+
+        // Row 1
+        if (sorted.isNotEmpty()) {
+            binding.tvLabel1.text = sorted[0].name
+            binding.tvValue1.text = "R %,.0f".format(sorted[0].amount)
+        }
+
+        // Row 2
+        if (sorted.size > 1) {
+            binding.tvLabel2.text = sorted[1].name
+            binding.tvValue2.text = "R %,.0f".format(sorted[1].amount)
+        }
+
+        // Row 3
+        if (sorted.size > 2) {
+            binding.tvLabel3.text = sorted[2].name
+            binding.tvValue3.text = "R %,.0f".format(sorted[2].amount)
+        }
+    }
+
+    override fun onDestroyView() {
+        super.onDestroyView()
+        _binding = null
+    }
+}

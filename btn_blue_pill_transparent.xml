@@ -1,0 +1,166 @@
+package com.example.wealthwise.ui.budget
+
+import android.content.res.ColorStateList
+import android.graphics.Color
+import android.view.LayoutInflater
+import android.view.View
+import android.view.ViewGroup
+import androidx.recyclerview.widget.DiffUtil
+import androidx.recyclerview.widget.ListAdapter
+import androidx.recyclerview.widget.RecyclerView
+import com.example.wealthwise.database.entities.Category
+import com.example.wealthwise.databinding.ItemBudgetCategoryBinding
+
+data class BudgetCategory(
+    val category: Category,
+    val spent: Double
+)
+
+class BudgetAdapter(
+    private val onEditClick: (Category) -> Unit,
+    private val onDeleteClick: (Category) -> Unit
+) : ListAdapter<BudgetCategory, BudgetAdapter.BudgetViewHolder>(BudgetDiffCallback()) {
+
+    private var categoryMaxGoals: Map<String, Double> = emptyMap()
+    private var categoryMinGoals: Map<String, Double> = emptyMap()
+
+    fun setCategoryGoals(maxGoals: Map<String, Double>, minGoals: Map<String, Double> = emptyMap()) {
+        this.categoryMaxGoals = maxGoals
+        this.categoryMinGoals = minGoals
+        notifyDataSetChanged()
+    }
+
+    override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): BudgetViewHolder {
+        val binding = ItemBudgetCategoryBinding.inflate(
+            LayoutInflater.from(parent.context), parent, false
+        )
+        return BudgetViewHolder(binding)
+    }
+
+    override fun onBindViewHolder(holder: BudgetViewHolder, position: Int) {
+        val item = getItem(position)
+        val maxGoal = categoryMaxGoals[item.category.name] ?: 0.0
+        val minGoal = categoryMinGoals[item.category.name] ?: 0.0
+        holder.bind(item, maxGoal, minGoal)
+    }
+
+    inner class BudgetViewHolder(
+        private val binding: ItemBudgetCategoryBinding
+    ) : RecyclerView.ViewHolder(binding.root) {
+
+        fun bind(item: BudgetCategory, maxGoal: Double, minGoal: Double) {
+            val category = item.category
+            val spent = item.spent
+            val limit = category.budgetLimit
+
+            // ─── Basic fields ────────────────────────────────────────────────
+            binding.tvCategoryName.text = category.name
+
+            // Show currency with 2 decimal places for consistency
+            binding.tvSpent.text  = "R %.2f".format(spent)
+            binding.tvBudget.text = "of R %.2f".format(limit)
+
+            // ─── Progress ────────────────────────────────────────────────────
+            val pct = if (limit > 0) ((spent / limit) * 100).toInt().coerceIn(0, 100) else 0
+            binding.progressCategory.progress = pct
+
+            // Descriptive percentage label — hide when no limit is set
+            if (limit <= 0) {
+                binding.tvPercent.text = "No limit set"
+            } else {
+                binding.tvPercent.text = "$pct% used"
+            }
+
+            // ─── Category Goals ─────────────────────────────────────────────
+            val goalsText = StringBuilder()
+            if (maxGoal > 0) {
+                goalsText.append("🎯 Max: R %.0f".format(maxGoal))
+            }
+            if (minGoal > 0) {
+                if (goalsText.isNotEmpty()) goalsText.append(" | ")
+                goalsText.append("💰 Min Sav: R %.0f".format(minGoal))
+            }
+
+            if (goalsText.isNotEmpty()) {
+                binding.tvCategoryGoal.visibility = View.VISIBLE
+                binding.tvCategoryGoal.text = goalsText.toString()
+                
+                // Change color if exceeded max
+                if (maxGoal > 0 && spent > maxGoal) {
+                    binding.tvCategoryGoal.setTextColor(Color.parseColor("#FF6B6B"))
+                } else {
+                    binding.tvCategoryGoal.setTextColor(Color.parseColor("#00E5FF"))
+                }
+            } else {
+                binding.tvCategoryGoal.visibility = View.GONE
+            }
+
+            // ─── Status badge ────────────────────────────────────────────────
+            if (limit <= 0) {
+                binding.tvStatusBadge.visibility = View.GONE
+                binding.tvLimitAlert.visibility  = View.GONE
+                binding.progressCategory.progressTintList =
+                    ColorStateList.valueOf(Color.parseColor("#00E5FF"))
+            } else {
+                binding.tvStatusBadge.visibility = View.VISIBLE
+
+                when {
+                    spent > limit -> {
+                        binding.tvStatusBadge.text = "Over Budget"
+                        binding.tvStatusBadge.setTextColor(Color.parseColor("#FF6B6B"))
+                        binding.progressCategory.progressTintList =
+                            ColorStateList.valueOf(Color.parseColor("#FF6B6B"))
+                    }
+                    pct >= 80 -> {
+                        binding.tvStatusBadge.text = "Near Limit"
+                        binding.tvStatusBadge.setTextColor(Color.parseColor("#FFB347"))
+                        binding.progressCategory.progressTintList =
+                            ColorStateList.valueOf(Color.parseColor("#FFB347"))
+                    }
+                    else -> {
+                        binding.tvStatusBadge.text = "On Track"
+                        binding.tvStatusBadge.setTextColor(Color.parseColor("#00E5FF"))
+                        binding.progressCategory.progressTintList =
+                            ColorStateList.valueOf(Color.parseColor("#00E5FF"))
+                    }
+                }
+            }
+
+            // ─── Limit alert banner ──────────────────────────────────────────
+            if (limit > 0) {
+                if (spent > limit) {
+                    binding.tvLimitAlert.visibility = View.VISIBLE
+                    val overspend = spent - limit
+                    binding.tvLimitAlert.text = "🚨 Over budget by R %.2f".format(overspend)
+                    binding.tvLimitAlert.setTextColor(Color.parseColor("#FF6B6B"))
+                } else if (pct >= 80) {
+                    binding.tvLimitAlert.visibility = View.VISIBLE
+                    binding.tvLimitAlert.text = "⚠️ $pct% of budget used"
+                    binding.tvLimitAlert.setTextColor(Color.parseColor("#FFB347"))
+                } else {
+                    binding.tvLimitAlert.visibility = View.GONE
+                }
+            } else {
+                binding.tvLimitAlert.visibility = View.GONE
+            }
+
+            // ─── Click listeners ─────────────────────────────────────────────
+            binding.ivEditCategory.setOnClickListener {
+                val pos = bindingAdapterPosition
+                if (pos != RecyclerView.NO_POSITION) onEditClick(getItem(pos).category)
+            }
+            binding.ivDeleteCategory.setOnClickListener {
+                val pos = bindingAdapterPosition
+                if (pos != RecyclerView.NO_POSITION) onDeleteClick(getItem(pos).category)
+            }
+        }
+    }
+
+    class BudgetDiffCallback : DiffUtil.ItemCallback<BudgetCategory>() {
+        override fun areItemsTheSame(oldItem: BudgetCategory, newItem: BudgetCategory): Boolean =
+            oldItem.category.id == newItem.category.id
+
+        override fun areContentsTheSame(oldItem: BudgetCategory, newItem: BudgetCategory): Boolean =
+            oldItem == newItem
+    }
+}

@@ -1,0 +1,49 @@
+package com.example.wealthwise.ui.transactions
+
+import android.net.Uri
+import android.os.Bundle
+import android.view.LayoutInflater
+import android.view.View
+import android.view.ViewGroup
+import androidx.fragment.app.Fragment
+import androidx.navigation.fragment.findNavController
+import com.example.wealthwise.databinding.FragmentReceiptViewerBinding
+import java.io.File
+
+class ReceiptViewerFragment : Fragment() {
+
+    private var _binding: FragmentReceiptViewerBinding? = null
+    private val binding get() = _binding!!
+
+    override fun onCreateView(
+        inflater: LayoutInflater, container: ViewGroup?,
+        savedInstanceState: Bundle?
+    ): View {
+        _binding = FragmentReceiptViewerBinding.inflate(inflater, container, false)
+        return binding.root
+    }
+
+    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+        super.onViewCreated(view, savedInstanceState)
+
+        val photoPath = arguments?.getString("photoPath")
+
+        if (!photoPath.isNullOrEmpty()) {
+            val file = File(photoPath)
+            if (file.exists()) {
+                binding.ivFullReceipt.setImageURI(Uri.fromFile(file))
+            } else if (photoPath.startsWith("content://")) {
+                binding.ivFullReceipt.setImageURI(Uri.parse(photoPath))
+            }
+        }
+
+        binding.btnBack.setOnClickListener {
+            findNavController().popBackStack()
+        }
+    }
+
+    override fun onDestroyView() {
+        super.onDestroyView()
+        _binding = null
+    }
+}

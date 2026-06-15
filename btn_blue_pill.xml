@@ -1,0 +1,160 @@
+package com.example.wealthwise.ui.budget
+
+import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
+import android.os.Bundle
+import android.view.LayoutInflater
+import android.view.View
+import android.view.ViewGroup
+import android.widget.Toast
+import androidx.core.content.ContextCompat
+import androidx.fragment.app.Fragment
+import androidx.fragment.app.viewModels
+import androidx.navigation.fragment.findNavController
+import com.example.wealthwise.SessionManager
+import com.example.wealthwise.database.entities.Category
+import com.example.wealthwise.databinding.FragmentAddCategoryBinding
+import com.example.wealthwise.viewmodel.TransactionViewModel
+import com.example.wealthwise.viewmodel.TransactionViewModelFactory
+import com.google.firebase.auth.FirebaseAuth
+import com.example.wealthwise.R
+
+class AddCategoryFragment : Fragment() {
+
+    private var _binding: FragmentAddCategoryBinding? = null
+    private val binding get() = _binding!!
+
+    // FIX 1: Use ViewModelFactory so the ViewModel can receive Application/Repository
+    private val viewModel: TransactionViewModel by viewModels {
+        TransactionViewModelFactory(requireActivity().application)
+    }
+
+    private var selectedColor: String = "#2B5CE6"
+
+    override fun onCreateView(
+        inflater: LayoutInflater, container: ViewGroup?,
+        savedInstanceState: Bundle?
+    ): View {
+        _binding = FragmentAddCategoryBinding.inflate(inflater, container, false)
+        return binding.root
+    }
+
+    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+        super.onViewCreated(view, savedInstanceState)
+
+        setupColorPicker()
+
+        binding.tvBack.setOnClickListener {
+            findNavController().popBackStack()
+        }
+
+        binding.rgType.setOnCheckedChangeListener { _, checkedId ->
+            updateToggleUI(checkedId)
+        }
+
+        binding.btnSaveCategory.setOnClickListener {
+            saveCategory()
+        }
+
+        updateToggleUI(binding.rbExpense.id)
+    }
+
+    private fun setupColorPicker() {
+        val colors = mapOf(
+            binding.colorRed to "#FF6B6B",
+            binding.colorBlue to "#2B5CE6",
+            binding.colorCyan to "#00E5FF",
+            binding.colorGreen to "#4CAF50",
+            binding.colorOrange to "#FF9800",
+            binding.colorPurple to "#9C27B0"
+        )
+
+        colors.forEach { (view, colorCode) ->
+            view.setOnClickListener {
+                selectedColor = colorCode
+                updateColorSelection(colors.keys, view)
+            }
+        }
+
+        // Set default selection
+        updateColorSelection(colors.keys, binding.colorBlue)
+    }
+
+    private fun updateColorSelection(allViews: Set<View>, selectedView: View) {
+        allViews.forEach { view ->
+            val isSelected = (view == selectedView)
+            val strokeWidth = if (isSelected) 6 else 0
+            val strokeColor = if (isSelected) Color.WHITE else Color.TRANSPARENT
+
+            val background = view.background as? GradientDrawable
+            background?.setStroke(strokeWidth, strokeColor)
+        }
+    }
+
+    private fun updateToggleUI(checkedId: Int) {
+        if (checkedId == binding.rbExpense.id) {
+            binding.rbExpense.setBackgroundResource(com.example.wealthwise.R.drawable.btn_blue_pill)
+            binding.rbIncome.setBackgroundResource(com.example.wealthwise.R.drawable.btn_blue_pill_transparent)
+        } else {
+            binding.rbIncome.setBackgroundResource(com.example.wealthwise.R.drawable.btn_blue_pill)
+            binding.rbExpense.setBackgroundResource(com.example.wealthwise.R.drawable.btn_blue_pill_transparent)
+        }
+    }
+
+    private fun saveCategory() {
+        // FIX 2: Get the current logged-in user's UID (Check SessionManager then Firebase)
+        val userId = SessionManager.getUserId(requireContext()) 
+            ?: FirebaseAuth.getInstance().currentUser?.uid
+
+        if (userId == null) {
+            Toast.makeText(requireContext(), "You must be logged in to add a category.", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val name = binding.etCategoryName.text.toString().trim()
+        val limitText = binding.etBudgetLimit.text.toString().trim()
+        val limit = limitText.toDoubleOrNull() ?: 0.0
+        val type = if (binding.rbExpense.isChecked) "EXPENSE" else "INCOME"
+
+        // Validate name
+        if (name.isEmpty()) {
+            binding.etCategoryName.error = "Please enter a category name"
+            binding.etCategoryName.requestFocus()
+            return
+        }
+
+        // FIX 4: Block negative budget limits
+        if (limit < 0) {
+            binding.etBudgetLimit.error = "Budget limit cannot be negative"
+            binding.etBudgetLimit.requestFocus()
+            return
+        }
+
+        val category = Category(
+            name = name,
+            type = type,
+            budgetLimit = limit,
+            color = selectedColor,
+            userId = userId  // FIX 5: Always associate the category with the logged-in user
+        )
+
+        // FIX 6: Check for duplicates first, then insert — both done inside the ViewModel
+        viewModel.insertCategoryIfNotDuplicate(
+            category = category,
+            onSuccess = {
+                Toast.makeText(requireContext(), "'$name' category saved!", Toast.LENGTH_SHORT).show()
+                findNavController().popBackStack()
+            },
+            onDuplicate = {
+                binding.etCategoryName.error = "A category named '$name' already exists"
+                binding.etCategoryName.requestFocus()
+            }
+        )
+    }
+
+    // FIX 7: Clean up binding to prevent memory leaks
+    override fun onDestroyView() {
+        super.onDestroyView()
+        _binding = null
+    }
+}

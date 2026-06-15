@@ -1,0 +1,202 @@
+package com.example.wealthwise.ui.settings
+
+import android.app.AlertDialog
+import android.content.Intent
+import android.net.Uri
+import android.os.Bundle
+import android.view.LayoutInflater
+import android.view.View
+import android.view.ViewGroup
+import android.widget.EditText
+import android.widget.LinearLayout
+import android.widget.Toast
+import androidx.core.content.FileProvider
+import androidx.fragment.app.Fragment
+import androidx.fragment.app.viewModels
+import androidx.lifecycle.lifecycleScope
+import androidx.navigation.fragment.findNavController
+import com.example.wealthwise.R
+import com.example.wealthwise.SessionManager
+import com.example.wealthwise.databinding.FragmentSettingsBinding
+import com.example.wealthwise.viewmodel.TransactionViewModel
+import com.google.firebase.auth.FirebaseAuth
+import kotlinx.coroutines.launch
+import java.io.File
+import java.io.FileOutputStream
+
+class SettingsFragment : Fragment() {
+
+    private var _binding: FragmentSettingsBinding? = null
+    private val binding get() = _binding!!
+    private val viewModel: TransactionViewModel by viewModels()
+
+    override fun onCreateView(
+        inflater: LayoutInflater, container: ViewGroup?,
+        savedInstanceState: Bundle?
+    ): View {
+        _binding = FragmentSettingsBinding.inflate(inflater, container, false)
+        return binding.root
+    }
+
+    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+        super.onViewCreated(view, savedInstanceState)
+
+        updateUserInfoDisplay()
+
+        binding.tvBack.setOnClickListener {
+            findNavController().popBackStack()
+        }
+
+        binding.llProfile.setOnClickListener {
+            showEditProfileDialog()
+        }
+
+        binding.llSecurity.setOnClickListener {
+            showChangePasswordDialog()
+        }
+
+        binding.llExport.setOnClickListener {
+            exportTransactionsToCSV()
+        }
+
+        binding.llNotifications.setOnClickListener {
+            Toast.makeText(requireContext(), "Notification settings will be available in the next OS update", Toast.LENGTH_SHORT).show()
+        }
+        
+        binding.llOffline.setOnClickListener {
+            Toast.makeText(requireContext(), "Offline mode is automatically enabled", Toast.LENGTH_SHORT).show()
+        }
+
+        binding.llTips.setOnClickListener {
+            showTipsDialog()
+        }
+
+        binding.llLogout.setOnClickListener {
+            showLogoutDialog()
+        }
+    }
+
+    private fun updateUserInfoDisplay() {
+        binding.tvUserName.text  = SessionManager.getUserName(requireContext())
+        binding.tvUserEmail.text = SessionManager.getUserEmail(requireContext())
+    }
+
+    private fun showEditProfileDialog() {
+        val builder = AlertDialog.Builder(requireContext())
+        builder.setTitle("Edit Profile")
+
+        val input = EditText(requireContext())
+        input.setText(SessionManager.getUserName(requireContext()))
+        
+        val lp = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        )
+        lp.setMargins(50, 20, 50, 0)
+        input.layoutParams = lp
+        
+        val container = LinearLayout(requireContext())
+        container.addView(input)
+        builder.setView(container)
+
+        builder.setPositiveButton("Save") { _, _ ->
+            val newName = input.text.toString().trim()
+            if (newName.isNotEmpty()) {
+                // Update Session
+                val userId = SessionManager.getUserId(requireContext()) ?: ""
+                val email = SessionManager.getUserEmail(requireContext())
+                SessionManager.login(requireContext(), userId, newName, email)
+                updateUserInfoDisplay()
+                Toast.makeText(requireContext(), "Profile updated!", Toast.LENGTH_SHORT).show()
+            }
+        }
+        builder.setNegativeButton("Cancel", null)
+        builder.show()
+    }
+
+    private fun showChangePasswordDialog() {
+        val email = SessionManager.getUserEmail(requireContext())
+        AlertDialog.Builder(requireContext())
+            .setTitle("Change Password")
+            .setMessage("We will send a password reset link to $email. Would you like to proceed?")
+            .setPositiveButton("Send Link") { _, _ ->
+                FirebaseAuth.getInstance().sendPasswordResetEmail(email)
+                    .addOnCompleteListener { task ->
+                        if (task.isSuccessful) {
+                            Toast.makeText(requireContext(), "Reset link sent!", Toast.LENGTH_SHORT).show()
+                        } else {
+                            Toast.makeText(requireContext(), "Error: ${task.exception?.message}", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun exportTransactionsToCSV() {
+        lifecycleScope.launch {
+            val transactions = viewModel.getAllTransactionsOnce()
+            if (transactions.isEmpty()) {
+                Toast.makeText(requireContext(), "No transactions to export", Toast.LENGTH_SHORT).show()
+                return@launch
+            }
+
+            try {
+                val csvFile = File(requireContext().cacheDir, "WealthWise_Transactions.csv")
+                val fos = FileOutputStream(csvFile)
+                fos.write("Date,Amount,Type,Description\n".toByteArray())
+                
+                transactions.forEach {
+                    val line = "${it.date},${it.amount},${it.type},\"${it.description}\"\n"
+                    fos.write(line.toByteArray())
+                }
+                fos.close()
+
+                val contentUri = FileProvider.getUriForFile(
+                    requireContext(),
+                    "${requireContext().packageName}.provider",
+                    csvFile
+                )
+
+                val intent = Intent(Intent.ACTION_SEND).apply {
+                    type = "text/csv"
+                    putExtra(Intent.EXTRA_SUBJECT, "WealthWise Transaction Report")
+                    putExtra(Intent.EXTRA_STREAM, contentUri)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                startActivity(Intent.createChooser(intent, "Export CSV"))
+
+            } catch (e: Exception) {
+                Toast.makeText(requireContext(), "Export failed: ${e.message}", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    private fun showTipsDialog() {
+        AlertDialog.Builder(requireContext())
+            .setTitle("Financial Tips")
+            .setMessage("1. Track every expense, no matter how small.\n" +
+                        "2. Set realistic savings goals.\n" +
+                        "3. Use categories to see where your money goes.\n" +
+                        "4. Review your budget weekly.")
+            .setPositiveButton("Got it!", null)
+            .show()
+    }
+
+    private fun showLogoutDialog() {
+        AlertDialog.Builder(requireContext())
+            .setTitle("Log Out")
+            .setMessage("Are you sure you want to log out of WealthWise?")
+            .setPositiveButton("Log Out") { _, _ ->
+                SessionManager.logout(requireContext())
+                findNavController().navigate(R.id.action_settingsFragment_to_loginFragment)
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    override fun onDestroyView() {
+        super.onDestroyView()
+        _binding = null
+    }
+}

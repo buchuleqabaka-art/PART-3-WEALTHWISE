@@ -1,0 +1,234 @@
+package com.example.wealthwise.ui.auth
+
+import android.content.Context
+import android.os.Bundle
+import android.view.LayoutInflater
+import android.view.View
+import android.view.ViewGroup
+import androidx.core.graphics.toColorInt
+import androidx.fragment.app.Fragment
+import androidx.fragment.app.viewModels
+import androidx.navigation.fragment.findNavController
+import com.example.wealthwise.R
+import com.example.wealthwise.SessionManager
+import com.example.wealthwise.databinding.FragmentWelcomeBinding
+import com.example.wealthwise.viewmodel.TransactionViewModel
+import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.firestore.FirebaseFirestore
+
+class WelcomeFragment : Fragment() {
+
+    private var _binding: FragmentWelcomeBinding? = null
+    private val binding get() = _binding!!
+    private val viewModel: TransactionViewModel by viewModels()
+
+    override fun onCreateView(
+        inflater: LayoutInflater, container: ViewGroup?,
+        savedInstanceState: Bundle?
+    ): View {
+        _binding = FragmentWelcomeBinding.inflate(inflater, container, false)
+        return binding.root
+    }
+
+    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+        super.onViewCreated(view, savedInstanceState)
+
+        // CHECK IF USER JUST SIGNED UP
+        val successMessage = arguments?.getString("signup_success")
+
+        if (successMessage != null) {
+            binding.tvSuccessMessage.text = successMessage
+            binding.tvSuccessMessage.visibility = View.VISIBLE
+
+            //  Smooth fade-in animation
+            binding.tvSuccessMessage.alpha = 0f
+            binding.tvSuccessMessage.animate()
+                .alpha(1f)
+                .setDuration(800)
+                .start()
+        }
+
+        // 🔹 Load cached user
+        val prefs = requireContext()
+            .getSharedPreferences("wealthwise_prefs", Context.MODE_PRIVATE)
+
+        val cachedName = prefs.getString("logged_in_name", null)
+
+        if (cachedName != null) {
+            // ✅ Returning user
+            binding.tvWelcomeName.text = "Welcome to your budgeting app"
+        } else {
+            // 🔄 Fallback to Firebase
+            val user = FirebaseAuth.getInstance().currentUser
+
+            if (user != null) {
+                FirebaseFirestore.getInstance()
+                    .collection("users")
+                    .document(user.uid)
+                    .get()
+                    .addOnSuccessListener { doc ->
+
+                        val fullName = doc.getString("fullName")
+                        val email = doc.getString("email") ?: user.email ?: ""
+
+                        if (fullName != null) {
+                            binding.tvWelcomeName.text = "Welcome to your budgeting app"
+
+                            // Save session
+                            SessionManager.login(
+                                requireContext(),
+                                user.uid,
+                                fullName,
+                                email
+                            )
+                            // Sync ViewModel with the new session
+                            viewModel.refreshUser()
+                        } else {
+                            binding.tvWelcomeName.text = "Welcome to your budgeting app"
+                        }
+                    }
+                    .addOnFailureListener {
+                        binding.tvWelcomeName.text = "Welcome to your budgeting app"
+                    }
+            } else {
+                binding.tvWelcomeName.text = "Welcome to your budgeting app"
+            }
+        }
+
+        //  NAVIGATION
+        binding.btnGetStarted.setOnClickListener {
+            findNavController().navigate(R.id.action_welcomeFragment_to_homeFragment)
+        }
+
+        binding.llQuickAdd.setOnClickListener {
+            findNavController().navigate(R.id.action_global_addTransactionFragment)
+        }
+
+        binding.llQuickHome.setOnClickListener {
+            findNavController().navigate(R.id.action_welcomeFragment_to_homeFragment)
+        }
+
+        binding.llQuickTransfer.setOnClickListener {
+            // In a full implementation, this might go to a specific Transfer screen.
+            // For now, we reuse the Add Transaction flow.
+            findNavController().navigate(R.id.action_global_addTransactionFragment)
+        }
+
+        binding.tvViewAll.setOnClickListener {
+            findNavController().navigate(R.id.action_global_transactionListFragment)
+        }
+
+        observeData()
+    }
+
+    private fun observeData() {
+        viewModel.balance.observe(viewLifecycleOwner) { balance ->
+            binding.tvTotalBalance.text = "%,.0f".format(balance ?: 0.0)
+        }
+
+        // Gamification Data
+        viewModel.currentUserLiveData.observe(viewLifecycleOwner) { user ->
+            if (user != null) {
+                binding.tvUserLevel.text = getString(R.string.level_format, user.level)
+                binding.tvUserPoints.text = getString(R.string.points_format, user.points)
+                binding.tvUserStreak.text = if (user.streak > 0) "🔥 ${user.streak} Day Streak" else "Start a streak!"
+                if (user.points >= 10) {
+                    binding.llBadgeFirstStep.alpha = 1.0f
+                }
+                // Badge Logic: 🏆 Master (Reached Level 2)
+                if (user.level >= 2) {
+                    binding.llBadgeBudgetMaster.alpha = 1.0f
+                }
+                // Badge Logic: 🎯 Goal Getter (Assuming some condition, let's say points >= 300)
+                if (user.points >= 300) {
+                    binding.llBadgeGoalGetter.alpha = 1.0f
+                }
+            }
+        }
+
+        viewModel.allTransactionsWithCategory.observe(viewLifecycleOwner) { transactions ->
+            if (transactions.isNullOrEmpty()) {
+                binding.llTransaction1.visibility = View.GONE
+                binding.llTransaction2.visibility = View.GONE
+                binding.llTransaction3.visibility = View.GONE
+            } else {
+                // Show up to 3 recent transactions
+                val recent = transactions.take(3)
+                
+                // Reset all first
+                binding.llTransaction1.visibility = View.GONE
+                binding.llTransaction2.visibility = View.GONE
+                binding.llTransaction3.visibility = View.GONE
+
+                recent.forEachIndexed { index, item ->
+                    val layout = when(index) {
+                        0 -> binding.llTransaction1
+                        1 -> binding.llTransaction2
+                        else -> binding.llTransaction3
+                    }
+                    val tvCat = when(index) {
+                        0 -> binding.tvTransactionCategory1
+                        1 -> binding.tvTransactionCategory2
+                        else -> binding.tvTransactionCategory3
+                    }
+                    val tvDate = when(index) {
+                        0 -> binding.tvTransactionDate1
+                        1 -> binding.tvTransactionDate2
+                        else -> binding.tvTransactionDate3
+                    }
+                    val tvAmount = when(index) {
+                        0 -> binding.tvTransactionAmount1
+                        1 -> binding.tvTransactionAmount2
+                        else -> binding.tvTransactionAmount3
+                    }
+
+                    layout.visibility = View.VISIBLE
+                    tvCat.text = item.transaction.description.ifEmpty { item.category?.name ?: "Expense" }
+                    tvDate.text = item.transaction.date
+                    
+                    val amountStr = if (item.transaction.type == "EXPENSE") {
+                        getString(R.string.amount_format_expense, item.transaction.amount)
+                    } else {
+                        getString(R.string.amount_format_income, item.transaction.amount)
+                    }
+                    tvAmount.text = amountStr
+                    
+                    tvAmount.setTextColor(if (item.transaction.type == "EXPENSE") 
+                        "#FF6B6B".toColorInt() else 
+                        "#51CF66".toColorInt())
+                }
+            }
+        }
+
+        viewModel.goalProgress.observe(viewLifecycleOwner) { progress ->
+            val goal = progress.goal
+            val spent = progress.totalSpent
+            
+            if (goal != null && goal.targetAmount > 0) {
+                binding.tvGoalName.text = goal.name
+                binding.tvGoalProgress.text = getString(R.string.goal_progress_format, spent, goal.targetAmount)
+                
+                val pctFloat = (spent / goal.targetAmount).coerceIn(0.0, 1.0).toFloat()
+                val params = binding.viewGoalProgress.layoutParams as android.widget.LinearLayout.LayoutParams
+                params.weight = pctFloat * 100 
+                binding.viewGoalProgress.layoutParams = params
+
+                val pctInt = (pctFloat * 100).toInt()
+                binding.tvGoalPercent.text = getString(R.string.completed_format, pctInt)
+            } else {
+                binding.tvGoalName.text = "No goal set"
+                binding.tvGoalProgress.text = "Tap Home/Budget to set a goal"
+                binding.tvGoalPercent.text = "0% completed"
+                
+                val params = binding.viewGoalProgress.layoutParams as android.widget.LinearLayout.LayoutParams
+                params.weight = 0.01f 
+                binding.viewGoalProgress.layoutParams = params
+            }
+        }
+    }
+
+    override fun onDestroyView() {
+        super.onDestroyView()
+        _binding = null
+    }
+}

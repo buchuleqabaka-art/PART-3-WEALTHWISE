@@ -1,0 +1,46 @@
+package com.example.wealthwise.ui.reports
+
+import android.net.Uri
+import android.view.LayoutInflater
+import android.view.View
+import android.view.ViewGroup
+import android.widget.ImageView
+import androidx.recyclerview.widget.DiffUtil
+import androidx.recyclerview.widget.ListAdapter
+import androidx.recyclerview.widget.RecyclerView
+import com.example.wealthwise.R
+import java.io.File
+
+class ReceiptAdapter : ListAdapter<String, ReceiptAdapter.ReceiptViewHolder>(ReceiptDiffCallback()) {
+
+    override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ReceiptViewHolder {
+        val view = LayoutInflater.from(parent.context).inflate(R.layout.item_receipt_small, parent, false)
+        return ReceiptViewHolder(view)
+    }
+
+    override fun onBindViewHolder(holder: ReceiptViewHolder, position: Int) {
+        holder.bind(getItem(position))
+    }
+
+    class ReceiptViewHolder(view: View) : RecyclerView.ViewHolder(view) {
+        private val ivReceipt: ImageView = view.findViewById(R.id.ivReceiptSmall)
+
+        fun bind(path: String) {
+            try {
+                val file = File(path)
+                if (file.exists()) {
+                    ivReceipt.setImageURI(Uri.fromFile(file))
+                } else if (path.startsWith("content://")) {
+                    ivReceipt.setImageURI(Uri.parse(path))
+                }
+            } catch (e: Exception) {
+                // Fail silently
+            }
+        }
+    }
+
+    class ReceiptDiffCallback : DiffUtil.ItemCallback<String>() {
+        override fun areItemsTheSame(oldItem: String, newItem: String): Boolean = oldItem == newItem
+        override fun areContentsTheSame(oldItem: String, newItem: String): Boolean = oldItem == newItem
+    }
+}

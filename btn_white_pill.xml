@@ -1,0 +1,478 @@
+package com.example.wealthwise.ui.budget
+
+import android.app.AlertDialog
+import android.graphics.Color
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.view.LayoutInflater
+import android.view.View
+import android.view.ViewGroup
+import android.widget.EditText
+import android.widget.TextView
+import android.widget.Toast
+import androidx.fragment.app.Fragment
+import androidx.fragment.app.viewModels
+import androidx.navigation.fragment.findNavController
+import androidx.recyclerview.widget.LinearLayoutManager
+import com.example.wealthwise.R
+import com.example.wealthwise.SessionManager
+import com.example.wealthwise.databinding.FragmentBudgetBinding
+import com.example.wealthwise.viewmodel.TransactionViewModel
+import com.google.android.material.datepicker.MaterialDatePicker
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import com.google.android.material.snackbar.Snackbar
+import java.text.SimpleDateFormat
+import java.util.*
+
+class BudgetFragment : Fragment() {
+
+    private var _binding: FragmentBudgetBinding? = null
+    private val binding get() = _binding!!
+    private val viewModel: TransactionViewModel by viewModels()
+    private lateinit var budgetAdapter: BudgetAdapter
+
+    private var selectedYear: Int = Calendar.getInstance().get(Calendar.YEAR)
+    private var selectedMonth: Int = Calendar.getInstance().get(Calendar.MONTH)
+
+    // User-defined goals
+    private var minSavingsGoal: Double = 0.0
+    private var maxSpendingGoal: Double = 0.0
+
+    // Category-specific goals (max spending per category)
+    private val categoryMaxGoals = mutableMapOf<String, Double>()
+
+    // Handler for auto-dismissing notifications
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var currentSnackbar: Snackbar? = null
+
+    override fun onCreateView(
+        inflater: LayoutInflater,
+        container: ViewGroup?,
+        savedInstanceState: Bundle?
+    ): View {
+        _binding = FragmentBudgetBinding.inflate(inflater, container, false)
+        return binding.root
+    }
+
+    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+        super.onViewCreated(view, savedInstanceState)
+
+        setupMonthSelector()
+        setupRecyclerView()
+        observeViewModel()
+        setupGoalSettings()
+
+        binding.btnAddCategory.setOnClickListener {
+            findNavController().navigate(R.id.action_budgetFragment_to_addCategoryFragment)
+        }
+
+        binding.tvHeading.setOnClickListener {
+            findNavController().popBackStack()
+        }
+
+        binding.ivSettings.setOnClickListener {
+            findNavController().navigate(R.id.settingsFragment)
+        }
+
+        // FAB with clear text as requested
+        binding.fabQuickAdd.apply {
+            text = "ADD TRANSACTION"
+            setOnClickListener {
+                findNavController().navigate(R.id.action_global_addTransactionFragment)
+            }
+        }
+    }
+
+    private fun setupGoalSettings() {
+        binding.btnSetGoals.setOnClickListener {
+            showGoalSettingsDialog()
+        }
+
+        // Load saved goals from SharedPreferences
+        loadSavedGoals()
+        updateGoalDisplay()
+    }
+
+    private fun showGoalSettingsDialog() {
+        val dialogView = layoutInflater.inflate(R.layout.dialog_goal_settings, null)
+        val etMinSavings = dialogView.findViewById<EditText>(R.id.etMinSavings)
+        val etMaxSpending = dialogView.findViewById<EditText>(R.id.etMaxSpending)
+
+        etMinSavings.setText(if (minSavingsGoal > 0) minSavingsGoal.toString() else "")
+        etMaxSpending.setText(if (maxSpendingGoal > 0) maxSpendingGoal.toString() else "")
+
+        MaterialAlertDialogBuilder(requireContext())
+            .setTitle("Set Your Financial Goals")
+            .setView(dialogView)
+            .setPositiveButton("Save") { _, _ ->
+                val minInput = etMinSavings.text.toString()
+                val maxInput = etMaxSpending.text.toString()
+
+                var isValid = true
+
+                if (minInput.isNotEmpty()) {
+                    minSavingsGoal = minInput.toDoubleOrNull() ?: run {
+                        showAutoDismissMessage("Invalid minimum savings amount", isError = true)
+                        isValid = false
+                        0.0
+                    }
+                } else {
+                    minSavingsGoal = 0.0
+                }
+
+                if (maxInput.isNotEmpty()) {
+                    maxSpendingGoal = maxInput.toDoubleOrNull() ?: run {
+                        showAutoDismissMessage("Invalid maximum spending amount", isError = true)
+                        isValid = false
+                        0.0
+                    }
+                } else {
+                    maxSpendingGoal = 0.0
+                }
+
+                if (isValid) {
+                    saveGoals()
+                    updateGoalDisplay()
+                    checkGoalsAchievement()
+                    showAutoDismissMessage("Goals saved successfully!", isError = false)
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun showCategoryGoalDialog(categoryName: String, currentGoal: Double) {
+        val dialogView = layoutInflater.inflate(R.layout.dialog_category_goal, null)
+        val etCategoryGoal = dialogView.findViewById<EditText>(R.id.etCategoryMaxGoal)
+        val tvCategoryName = dialogView.findViewById<TextView>(R.id.tvCategoryName)
+
+        tvCategoryName.text = categoryName
+        etCategoryGoal.setText(if (currentGoal > 0) currentGoal.toString() else "")
+        etCategoryGoal.hint = "Enter maximum spending limit for $categoryName"
+
+        MaterialAlertDialogBuilder(requireContext())
+            .setTitle("Set Category Spending Goal")
+            .setView(dialogView)
+            .setPositiveButton("Save") { _, _ ->
+                val goalInput = etCategoryGoal.text.toString()
+
+                if (goalInput.isNotEmpty()) {
+                    val goalAmount = goalInput.toDoubleOrNull()
+                    if (goalAmount != null && goalAmount > 0) {
+                        categoryMaxGoals[categoryName] = goalAmount
+                        saveCategoryGoals()
+                        showAutoDismissMessage("Goal for $categoryName set to R ${"%.0f".format(goalAmount)}", isError = false)
+                        refreshDataForCurrentMonth() // Refresh to show updated warnings
+                    } else {
+                        showAutoDismissMessage("Invalid amount. Please enter a positive number.", isError = true)
+                    }
+                } else {
+                    // Remove goal if empty
+                    categoryMaxGoals.remove(categoryName)
+                    saveCategoryGoals()
+                    showAutoDismissMessage("Goal removed for $categoryName", isError = false)
+                    refreshDataForCurrentMonth()
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .setNeutralButton("Remove Goal") { _, _ ->
+                categoryMaxGoals.remove(categoryName)
+                saveCategoryGoals()
+                showAutoDismissMessage("Goal removed for $categoryName", isError = false)
+                refreshDataForCurrentMonth()
+            }
+            .show()
+    }
+
+    private fun saveCategoryGoals() {
+        val prefs = requireContext().getSharedPreferences("category_goals", android.content.Context.MODE_PRIVATE)
+        prefs.edit().clear().apply()
+
+        categoryMaxGoals.forEach { (category, goal) ->
+            prefs.edit().putFloat(category, goal.toFloat()).apply()
+        }
+    }
+
+    private fun loadCategoryGoals() {
+        val prefs = requireContext().getSharedPreferences("category_goals", android.content.Context.MODE_PRIVATE)
+        categoryMaxGoals.clear()
+
+        // Get all category names from current budget data
+        viewModel.budgetData.value?.forEach { data ->
+            val categoryName = data.category.name
+            val savedGoal = prefs.getFloat(categoryName, -1f)
+            if (savedGoal > 0) {
+                categoryMaxGoals[categoryName] = savedGoal.toDouble()
+            }
+        }
+    }
+
+    private fun saveGoals() {
+        // Save to SharedPreferences
+        val prefs = requireContext().getSharedPreferences("budget_goals", android.content.Context.MODE_PRIVATE)
+        prefs.edit().apply {
+            putFloat("min_savings_goal", minSavingsGoal.toFloat())
+            putFloat("max_spending_goal", maxSpendingGoal.toFloat())
+            apply()
+        }
+    }
+
+    private fun loadSavedGoals() {
+        val prefs = requireContext().getSharedPreferences("budget_goals", android.content.Context.MODE_PRIVATE)
+        minSavingsGoal = prefs.getFloat("min_savings_goal", 0f).toDouble()
+        maxSpendingGoal = prefs.getFloat("max_spending_goal", 0f).toDouble()
+        loadCategoryGoals()
+    }
+
+    private fun updateGoalDisplay() {
+        binding.tvMinGoal.text = if (minSavingsGoal > 0) {
+            "Min Savings Goal: R ${"%.0f".format(minSavingsGoal)}"
+        } else {
+            "Min Savings Goal: Not set"
+        }
+
+        binding.tvMaxGoal.text = if (maxSpendingGoal > 0) {
+            "Max Spending Goal: R ${"%.0f".format(maxSpendingGoal)}"
+        } else {
+            "Max Spending Goal: Not set"
+        }
+    }
+
+    private fun checkGoalsAchievement() {
+        viewModel.budgetData.observe(viewLifecycleOwner) { data ->
+            if (!data.isNullOrEmpty()) {
+                val totalSpent = data.sumOf { it.spent }
+                val totalBudget = data.sumOf { it.category.budgetLimit }
+                val remaining = totalBudget - totalSpent
+                val totalSaved = remaining
+
+                // Check overall minimum savings goal
+                if (minSavingsGoal > 0 && totalSaved >= minSavingsGoal && totalSaved > 0) {
+                    showAutoDismissMessage(
+                        "Amazing! You've reached your savings goal of R ${"%.0f".format(minSavingsGoal)}!",
+                        isError = false,
+                        duration = 3000
+                    )
+                }
+
+                // Check overall maximum spending goal
+                if (maxSpendingGoal > 0) {
+                    if (totalSpent <= maxSpendingGoal && totalSpent > 0) {
+                        showAutoDismissMessage(
+                            "Great job! You're within your overall spending limit!",
+                            isError = false,
+                            duration = 3000
+                        )
+                    } else if (totalSpent > maxSpendingGoal) {
+                        val overspent = totalSpent - maxSpendingGoal
+                        binding.tvGoalWarning.text = "Warning: Exceeded overall spending goal by R ${"%.0f".format(overspent)}"
+                        binding.tvGoalWarning.setTextColor(Color.parseColor("#FF6B6B"))
+                        binding.tvGoalWarning.visibility = View.VISIBLE
+
+                        binding.tvGoalWarning.postDelayed({
+                            binding.tvGoalWarning.visibility = View.GONE
+                        }, 5000)
+
+                        showAutoDismissMessage(
+                            "You've exceeded your overall spending goal by R ${"%.0f".format(overspent)}",
+                            isError = true,
+                            duration = 4000
+                        )
+                    } else {
+                        binding.tvGoalWarning.visibility = View.GONE
+                    }
+                }
+
+                // Check category-specific goals
+                data.forEach { budgetItem ->
+                    val categoryName = budgetItem.category.name
+                    val categorySpent = budgetItem.spent
+                    val categoryGoal = categoryMaxGoals[categoryName]
+
+                    if (categoryGoal != null && categoryGoal > 0) {
+                        if (categorySpent > categoryGoal) {
+                            val overspent = categorySpent - categoryGoal
+                            showAutoDismissMessage(
+                                "${categoryName}: Exceeded goal by R ${"%.0f".format(overspent)}",
+                                isError = true,
+                                duration = 3000
+                            )
+                        } else if (categorySpent >= categoryGoal * 0.9 && categorySpent < categoryGoal) {
+                            val remaining_amount = categoryGoal - categorySpent
+                            showAutoDismissMessage(
+                                "${categoryName}: Close to limit! Only R ${"%.0f".format(remaining_amount)} left",
+                                isError = true,
+                                duration = 2500
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private fun showAutoDismissMessage(message: String, isError: Boolean = false, duration: Int = 2000) {
+        // Cancel any existing snackbar to avoid stacking
+        currentSnackbar?.dismiss()
+
+        // Create snackbar
+        val snackbar = Snackbar.make(binding.root, message, Snackbar.LENGTH_SHORT)
+
+        // Customize colors
+        snackbar.setBackgroundTint(if (isError) Color.parseColor("#FF6B6B") else Color.parseColor("#4CAF50"))
+        snackbar.setTextColor(Color.WHITE)
+
+        // Show the snackbar
+        snackbar.show()
+        currentSnackbar = snackbar
+
+        // Auto-dismiss after custom duration
+        mainHandler.postDelayed({
+            if (currentSnackbar == snackbar && snackbar.isShown) {
+                snackbar.dismiss()
+                currentSnackbar = null
+            }
+        }, duration.toLong())
+    }
+
+    private fun setupMonthSelector() {
+        binding.chipMonthSelector.setOnClickListener {
+            showMonthYearPicker()
+        }
+        updateMonthDisplay()
+    }
+
+    private fun updateMonthDisplay() {
+        val calendar = Calendar.getInstance().apply {
+            set(Calendar.YEAR, selectedYear)
+            set(Calendar.MONTH, selectedMonth)
+        }
+        val monthName = SimpleDateFormat("MMMM yyyy", Locale.getDefault()).format(calendar.time)
+        binding.chipMonthSelector.text = monthName
+    }
+
+    private fun showMonthYearPicker() {
+        val calendar = Calendar.getInstance().apply {
+            set(Calendar.YEAR, selectedYear)
+            set(Calendar.MONTH, selectedMonth)
+        }
+
+        val datePicker = MaterialDatePicker.Builder.datePicker()
+            .setTitleText("Select Month")
+            .setSelection(calendar.timeInMillis)
+            .build()
+
+        datePicker.addOnPositiveButtonClickListener { timestamp ->
+            val cal = Calendar.getInstance().apply { timeInMillis = timestamp }
+            selectedYear = cal.get(Calendar.YEAR)
+            selectedMonth = cal.get(Calendar.MONTH)
+            updateMonthDisplay()
+            refreshDataForCurrentMonth()
+        }
+        datePicker.show(childFragmentManager, "MONTH_PICKER")
+    }
+
+    private fun refreshDataForCurrentMonth() {
+        val yearMonth = String.format("%04d-%02d", selectedYear, selectedMonth + 1)
+        viewModel.setBudgetMonthFilter(yearMonth)
+        loadCategoryGoals() // Reload category goals when month changes
+    }
+
+    private fun setupRecyclerView() {
+        budgetAdapter = BudgetAdapter(
+            onEditClick = { category ->
+                // Show category goal dialog when edit is clicked
+                val currentGoal = categoryMaxGoals[category.name] ?: 0.0
+                showCategoryGoalDialog(category.name, currentGoal)
+            },
+            onDeleteClick = { category ->
+                AlertDialog.Builder(requireContext())
+                    .setTitle("Delete Category")
+                    .setMessage("Delete '${category.name}'? This cannot be undone.")
+                    .setPositiveButton("Delete") { _, _ ->
+                        viewModel.deleteCategory(category)
+                        categoryMaxGoals.remove(category.name)
+                        saveCategoryGoals()
+                        showAutoDismissMessage("Category '${category.name}' deleted", isError = false, duration = 1500)
+                    }
+                    .setNegativeButton("Cancel", null)
+                    .show()
+            }
+        )
+
+        binding.rvBudgetDetails.apply {
+            layoutManager = LinearLayoutManager(requireContext())
+            adapter = budgetAdapter
+        }
+    }
+
+    private fun observeViewModel() {
+        viewModel.budgetData.observe(viewLifecycleOwner) { data ->
+            if (data.isNullOrEmpty()) {
+                binding.rvBudgetDetails.visibility = View.GONE
+                binding.tvNoCategoriesMsg.visibility = View.VISIBLE
+            } else {
+                binding.rvBudgetDetails.visibility = View.VISIBLE
+                binding.tvNoCategoriesMsg.visibility = View.GONE
+
+                // Pass category goals to adapter for display
+                val dataWithGoals = data.map { budgetItem ->
+                    val categoryGoal = categoryMaxGoals[budgetItem.category.name] ?: 0.0
+                    Pair(budgetItem, categoryGoal)
+                }
+                budgetAdapter.submitList(data)
+
+                // Update adapter with goals (you'll need to modify BudgetAdapter to accept this)
+                // Alternatively, store goals in a separate map that adapter can access
+                budgetAdapter.setCategoryGoals(categoryMaxGoals)
+
+                val totalBudget = data.sumOf { it.category.budgetLimit }
+                val totalSpent = data.sumOf { it.spent }
+                val remaining = totalBudget - totalSpent
+
+                binding.tvTotalBudget.text = "R %.0f".format(totalBudget)
+                binding.tvTotalSpent.text = "R %.0f".format(totalSpent)
+                binding.tvRemaining.text = "R %.0f".format(remaining)
+
+                binding.tvRemaining.setTextColor(
+                    if (remaining < 0) Color.parseColor("#FF6B6B") else Color.parseColor("#00E5FF")
+                )
+
+                // Show auto-dismiss reminder for low remaining budget
+                if (remaining > 0 && remaining < totalBudget * 0.1 && totalBudget > 0) {
+                    showAutoDismissMessage(
+                        "Alert: Only R ${"%.0f".format(remaining)} left in your budget!",
+                        isError = true,
+                        duration = 3000
+                    )
+                }
+
+                // Check goals whenever budget data updates
+                checkGoalsAchievement()
+            }
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        refreshDataForCurrentMonth()
+        loadSavedGoals()
+        updateGoalDisplay()
+    }
+
+    override fun onPause() {
+        super.onPause()
+        // Dismiss any showing snackbar when fragment loses focus
+        currentSnackbar?.dismiss()
+        currentSnackbar = null
+        // Remove any pending callbacks
+        mainHandler.removeCallbacksAndMessages(null)
+    }
+
+    override fun onDestroyView() {
+        super.onDestroyView()
+        mainHandler.removeCallbacksAndMessages(null)
+        _binding = null
+    }
+}
