@@ -67,9 +67,7 @@ Wealthwise is a comprehensive Android application designed to help users take co
 4. **View Reports**: Check the 'Reports' tab for detailed charts of your spending by category.
 5. **Set Budgets**: Go to the 'Budget' tab to manage your monthly spending limits.
 
-LINKS
-GitHub: 
-Google Drive: https://drive.google.com/file/d/1G7ByvHhg28FrCLeYi0lI9JHa9-tiIXkq/view?usp=drivesdk
+
 
 ## License
 This project is licensed under the MIT License - see the LICENSE file for details.
